@@ -78,10 +78,10 @@ intToCharArray :: UArray Int Char
 intToCharArray = array (0, ubclist) (zip [0..ubclist] clist)
 
 charToIntArray :: UArray Char Int
-charToIntArray = array ('0', 'z') (zip clist [0..ubclist])
+charToIntArray = array (head clist, last clist) (zip clist [0..ubclist])
 
 integerToStringFile :: Int -> Integer -> String
-integerToStringFile size int = (\(x, y) ->  replicate (size - x) '#' ++ reverse y ) $ intToChunk' int
+integerToStringFile size int = (\(x, y) ->  replicate (size - x) (head clist) ++ reverse y ) $ intToChunk' int
   where intToChunk' 0 = (0, [])
         intToChunk' n = (restSize + 1, intToCharArray ! fromIntegral (n `mod` lenclist) : restChunk)
           where (restSize, restChunk) = intToChunk' (n `div` lenclist)

@@ -47,13 +47,14 @@ data SupportedData = Message String | File String deriving (Show)
 data Action = Encrypt {target_name :: Maybe String, rawM :: Maybe SupportedData}
             | Decrypt {rawM :: Maybe SupportedData}
             | LoadContact {file_path :: String} 
+            | AddPublicKey {rawM :: Maybe SupportedData}
             | NothingSpecified
             | DisplayHelp
             deriving Show
 
 parseArgs :: MP.ParserF String Action
 parseArgs = do
-  parseLContact <> parseHelp <> parseEncrypt <> parseDecrypt <> parseNoTargetEncrypt <> parseNothingSpecified
+  parseLContact <> parseAddPublicKey <> parseHelp <> parseEncrypt <> parseDecrypt <> parseNoTargetEncrypt <> parseNothingSpecified
   where
     parseLContact = do
       contactPath <- MP.mRunParserF parseContactName <$> MP.item
@@ -94,6 +95,17 @@ parseArgs = do
       MP.just "-h" <> MP.just "-help"
       MP.many0 MP.item
       return DisplayHelp
+    parseAddPublicKey = do
+      MP.just "-a"
+      AddPublicKey <$> rawMParser
+    rawMParser = 
+      do MP.just "-file"; Just . File <$> MP.item
+      <>
+      do MP.just "-string"; Just . Message <$> MP.item
+      <>
+      do Just . Message <$> MP.item
+      <>
+      return Nothing
     parseNothingSpecified = do
       return NothingSpecified
 
@@ -163,6 +175,44 @@ takeAction priKey (Decrypt (Just deObj)) = do
       decryptFile priKey fp
       putStrLn "File decrypted."
 
+takeAction p (AddPublicKey Nothing) = do
+  str <- safeInputStr "Please input the publickey or contact data structure: " [(null, "cannot be empty")]
+  takeAction p (AddPublicKey (Just (Message str)))
+
+takeAction p (AddPublicKey (Just (Message str))) = do
+  let contactM = readMaybe str :: Maybe Contact
+      pubkeyM  = readMaybe str :: Maybe PublicKey
+  case contactM of
+    Just ctc -> importCtc ctc
+    Nothing -> 
+      case pubkeyM of
+        Just pbk -> completeIntoCtc pbk >>= importCtc
+        Nothing -> putStrLn "Bad format."
+    where completeIntoCtc pbk = do
+              name <- safeInputStr "Input their name:" [(null, "Cannot be empty")]
+              emailM <- maybeInputStr "Input their email (if any):" 
+              return $ Contact name (MetaData emailM Nothing) pbk
+
+takeAction p (AddPublicKey (Just (File fnm))) = do
+  contact <- readMaybe <$> readFile fnm
+  case contact of
+    Nothing -> putStrLn $ "The file " ++ fnm ++ " is in wrong format, cannot import."
+    Just ctc -> do 
+      putStrLn $ "Successfully imported " ++ fnm ++ " into your contact list. "
+      note <- maybeInputStr "Do you want to write a note or remark on this contact? (if you do, what you write here may be used to search for this contact. If not, press Enter and leave blank): "
+      let mctc = metaData ctc
+          ctc' = ctc {metaData = mctc { memo = note }}
+      detectAndCreateCTCs
+      allctc <- withFile contactsPath ReadMode $ \handle -> do
+        contents <- hGetContents handle
+        -- Make sure to force the contents to be read while the file is open
+        length contents `seq` return (read contents :: S.Set Contact)
+      let allctc' = S.insert ctc' allctc
+      -- writeFile contactsPath (show allctc')
+      withFile contactsPath WriteMode $ \handle -> do
+        hPutStr handle (show allctc')
+      putStrLn "contact update complete."
+
 takeAction p NothingSpecified = do
   putStrLn "There is no parameter input, or they are of bad format. What do you want to do?"
   putStrLn "1.Encrypt message"
@@ -170,7 +220,8 @@ takeAction p NothingSpecified = do
   putStrLn "3.Decrypt message"
   putStrLn "4.Decrypt file"
   putStrLn "5.Display help"
-  choice <- safeInput "Please input(1-5):" [((>5), "too large"), ((<0), "cannot be negative")]
+  putStrLn "6.Add a contact"
+  choice <- safeInput "Please input(1-6):" [((>6), "too large"), ((<0), "cannot be negative")]
   case (choice :: Int) of
     1 -> do 
       target <- safeInputStr "Please specify who do you want to encrypt for: " [(null, "Cannot be empty")]
@@ -180,13 +231,19 @@ takeAction p NothingSpecified = do
       filepath <- safeInputStr "Please specify the file path: " [(null, "Cannot be empty")]
       takeAction p $ Encrypt (Just target) (Just (File filepath))
     3 -> do
-      str <- safeInputStr "Please input the encrypted message: " [(null, "Cannot be empty")]
+      str <- do putStrLn "Please input the encrypted message: " --(support multiline, enter an empty line to stop):" 
+                getLine --multiLine
       takeAction p (Decrypt (Just $ Message str))
     4 -> do
       str <- safeInputStr "Please input the filepath: " [(null, "Cannot be empty")]
       takeAction p (Decrypt (Just $ File str))
     5 -> takeAction p DisplayHelp
+    6 -> takeAction p (AddPublicKey Nothing)
   getLine >> return ()
+--    where
+--      multiLine = do
+--        line0 <- getLine
+--        if line0 == "" then return "" else (line0 ++ ) <$> multiLine
 
 takeAction _ DisplayHelp = putStrLn $ foldl (\x y -> x ++ "\n" ++ y) ""
   [ "一个简单易用的 RSA公匙加密体系实现。"
@@ -201,7 +258,11 @@ takeAction _ DisplayHelp = putStrLn $ foldl (\x y -> x ++ "\n" ++ y) ""
   , "但是只有有私匙(private key)的人才能解密任何被这个公匙加密的消息"
   , ""
   , "导入别人的联系方式："
-  , "将.contact文件拖动到prime.exe上。你也可以直接编辑allcontacts.txt。"
+  , "将.contact文件拖动到prime.exe上。你也可以直接编辑allcontacts.txt。也可以："
+  , ".\\Prime -a -file <.contact file>"
+  , ".\\Prime -a \"pubkey or contact\""
+  , ".\\Prime -a -string \"pubkey or contact\""
+  , ".\\Prime -a"
   , ""
   , "加密：在命令行下运行"
   , ".\\Prime -to <谁谁谁> -file <filepath>"
@@ -225,6 +286,22 @@ takeAction _ DisplayHelp = putStrLn $ foldl (\x y -> x ++ "\n" ++ y) ""
   , "不然你拖一个别的文件夹的文件上去，它会提示你创建prikey, 但实际上你已经在prime.exe同文件夹下创建过了"
   , "By Eiko"
   ]
+
+importCtc ctc = do
+      putStrLn $ "Successfully imported into your contact list. "
+      note <- maybeInputStr "Do you want to write a note or remark on this contact? (if you do, what you write here may be used to search for this contact. If not, press Enter and leave blank): "
+      let mctc = metaData ctc
+          ctc' = ctc {metaData = mctc { memo = note }}
+      detectAndCreateCTCs
+      allctc <- withFile contactsPath ReadMode $ \handle -> do
+        contents <- hGetContents handle
+        -- Make sure to force the contents to be read while the file is open
+        length contents `seq` return (read contents :: S.Set Contact)
+      let allctc' = S.insert ctc' allctc
+      -- writeFile contactsPath (show allctc')
+      withFile contactsPath WriteMode $ \handle -> do
+        hPutStr handle (show allctc')
+      putStrLn "contact update complete."
 
 
 encryptTo ctc (File fp) = do
